@@ -24,6 +24,68 @@
 ;; gets implemented: https://github.com/WebAssembly/sexpr-wasm-prototype/issues/92
 ;;
 
+(module
+  (memory 1)
+  (func $main
+    (call $keccak (i32.const 168) (i32.const 0) (i32.const 136) (i32.const 136))
+  )
+  (start $main)
+
+;;
+;; memcpy from ewasm-libc/ewasm-cleanup
+;;
+(func $memcpy
+  (param $dst i32)
+  (param $src i32)
+  (param $length i32)
+  (result i32)
+
+  (local $i i32)
+
+  (set_local $i (i32.const 0))
+
+  (block $done
+  (loop $loop
+    (if (i32.ge_u (get_local $i) (get_local $length))
+      (br $done)
+    )
+
+    (i32.store8 (i32.add (get_local $dst) (get_local $i)) (i32.load8_u (i32.add (get_local $src) (get_local $i))))
+
+    (set_local $i (i32.add (get_local $i) (i32.const 1)))
+    (br $loop)
+  )
+  )
+
+  (return (get_local $dst))
+)
+
+(func $memset
+  (param $ptr i32)
+  (param $value i32)
+  (param $length i32)
+  (result i32)
+
+  (local $i i32)
+
+  (set_local $i (i32.const 0))
+
+  (block $done
+  (loop $loop
+    (if (i32.ge_u (get_local $i) (get_local $length))
+      (br $done)
+    )
+
+    (i32.store8 (i32.add (get_local $ptr) (get_local $i)) (get_local $value))
+
+    (set_local $i (i32.add (get_local $i) (i32.const 1)))
+    (br $loop)
+  )
+  )
+
+  (return (get_local $ptr))
+)
+
 (func $keccak_theta
   (param $context_offset i32)
 
@@ -379,7 +441,8 @@
 
   ;; for (i = 0; i <= 24; i++)
   (set_local $i (i32.const 0))
-  (loop $done $loop
+  (block $done
+  (loop $loop
     (if (i32.ge_u (get_local $i) (i32.const 24))
       (br $done)
     )
@@ -389,7 +452,8 @@
     (i64.store (get_local $tmp) (i64.rotl (i64.load (get_local $tmp)) (i64.load8_u (i32.add (get_local $rotation_consts) (get_local $i)))))
 
     (set_local $i (i32.add (get_local $i) (i32.const 1)))
-    (br $loop)
+    (br $done)
+  )
   )
 )
 
@@ -438,7 +502,8 @@
 
   ;; for (round = 0; round < 25; i += 5)
   (set_local $i (i32.const 0))
-  (loop $done $loop
+  (block $done
+  (loop $loop
     (if (i32.ge_u (get_local $i) (i32.const 25))
       (br $done)
     )
@@ -504,6 +569,7 @@
     (set_local $i (i32.add (get_local $i) (i32.const 5)))
     (br $loop)
   )
+  )
 )
 
 (func $keccak_permute
@@ -518,7 +584,8 @@
 
   ;; for (round = 0; round < 24; round++)
   (set_local $round (i32.const 0))
-  (loop $done $loop
+  (block $done
+  (loop $loop
     (if (i32.ge_u (get_local $round) (i32.const 24))
       (br $done)
     )
@@ -546,7 +613,8 @@
 
     (set_local $round (i32.add (get_local $round) (i32.const 1)))
     (br $loop)
-  )  
+  )
+  )
 )
 
 (func $keccak_block
@@ -767,7 +835,7 @@
   (param $context_offset i32)
 
   ;; clear out the context memory
-  (call $memset (get_local $context_offset) (i32.const 0) (i32.const 400))
+  (drop (call $memset (get_local $context_offset) (i32.const 0) (i32.const 400)))
 )
 
 ;;
@@ -802,11 +870,11 @@
       )
 
       ;; fill up the residue buffer
-      (call $memcpy
+      (drop (call $memcpy
         (i32.add (get_local $residue_buffer) (get_local $residue_index))
         (get_local $input_offset)
         (get_local $tmp)
-      )
+      ))
 
       (set_local $residue_index (i32.add (get_local $residue_index) (get_local $tmp)))
 
@@ -824,7 +892,8 @@
   )
 
   ;; while (input_length > block_size)
-  (loop $done $loop
+  (block $done
+  (loop $loop
     (if (i32.lt_u (get_local $input_length) (i32.const 136))
       (br $done)
     )
@@ -835,15 +904,16 @@
     (set_local $input_length (i32.sub (get_local $input_length) (i32.const 136)))
     (br $loop)
   )
+  )
 
   ;; copy to the residue buffer
   (if (i32.gt_u (get_local $input_length) (i32.const 0))
     (then
-      (call $memcpy
+      (drop (call $memcpy
         (i32.add (get_local $residue_buffer) (get_local $residue_index))
         (get_local $input_offset)
         (get_local $input_length)
-      )
+      ))
 
       (set_local $residue_index (i32.add (get_local $residue_index) (get_local $input_length)))
       (i32.store (get_local $residue_offset) (get_local $residue_index))
@@ -874,7 +944,7 @@
   (set_local $tmp (get_local $residue_index))
 
   ;; clear the rest of the residue buffer
-  (call $memset (i32.add (get_local $residue_buffer) (get_local $tmp)) (i32.const 0) (i32.sub (i32.const 136) (get_local $tmp)))
+  (drop (call $memset (i32.add (get_local $residue_buffer) (get_local $tmp)) (i32.const 0) (i32.sub (i32.const 136) (get_local $tmp))))
 
   ;; ((char*)ctx->message)[ctx->rest] |= 0x01;
   (set_local $tmp (i32.add (get_local $residue_buffer) (get_local $residue_index)))
@@ -905,4 +975,5 @@
   (call $keccak_init (get_local $context_offset))
   (call $keccak_update (get_local $context_offset) (get_local $input_offset) (get_local $input_length))
   (call $keccak_finish (get_local $context_offset) (get_local $output_offset))
+)
 )
